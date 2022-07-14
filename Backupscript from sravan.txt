@@ -1,0 +1,29 @@
+
+SELECT p.database_name AS DatabaseName,
+p.backup_start_date AS 'Backup Start Time',
+p.backup_finish_date AS 'Backup Finish Time',
+CAST((DATEDIFF(MINUTE, p.backup_start_date, p.backup_finish_date)) AS varchar)+ ' min  '+ CAST((DATEDIFF(ss, p.backup_start_date, p.backup_finish_date)) AS varchar) + ' sec ' AS [Total Time] ,
+CASE p.type
+WHEN 'D' THEN 'Full '
+WHEN 'I' THEN 'Diffrential'
+WHEN 'L' THEN 'Log'
+END AS 'Backup Type',
+Cast(p.backup_size/1024/1024 AS numeric(10,2)) AS 'Backup Size(MB)' ,
+a.physical_device_name AS 'Physical File location'
+FROM msdb..backupmediafamily a,
+msdb..backupset p
+WHERE a.media_set_id=p.media_set_id
+
+-- UNCOMMENT BELOW LINE AND REPLACE <DATABASE NAME> WITH DB YOU WANT TO CHECK BACKUP HISTORY
+AND P.DATABASE_NAME =
+-- 'APSP01_UserProfileServiceApp_Profile_new'
+'APSP01_UserProfileServiceApp_Sync_new'
+
+-- UNCOMMENT BELOW LINE AND REPLACE START AND END DATES WITH DATES YOU WANT TO CHECK HISTORY
+--AND P.BACKUP_START_DATE>'2013-01-20' AND P.BACKUP_START_DATE<'2013-01-25 23:59:59'
+
+--UNCOMMENT BELOW LINE TO SEE ONLY THE FULL BACKUPS, REPLACE WITH 'I' TO CHECK DIFFRENTIAL AND 'L' TO CHECK ONLY LOG BACKUPS.
+AND P.TYPE='L'
+
+ORDER BY p.backup_start_date DESC
+--select * from sys.configurations where name like '%backup compression default%'

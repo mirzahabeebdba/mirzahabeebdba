@@ -1,0 +1,13 @@
+Below scripts on Database to get count for tables,views,Sp's,Functions :
+
+/* Count Number Of Tables In A Database */
+SELECT COUNT(*) AS TABLE_COUNT FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE'
+
+/* Count Number Of Views In A Database */
+SELECT COUNT(*) AS VIEW_COUNT FROM INFORMATION_SCHEMA.VIEWS
+
+/* Count Number Of Stored Procedures In A Database */
+SELECT COUNT(*) AS PROCEDURE_COUNT FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_TYPE = 'PROCEDURE'
+
+/* Count Number Of Functions In A Database */
+SELECT COUNT(*) AS FUNCTION_COUNT FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_TYPE = 'FUNCTION'

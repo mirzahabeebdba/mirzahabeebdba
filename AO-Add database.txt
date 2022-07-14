@@ -1,0 +1,12 @@
+Alter Database [dbname] SET HADR OFF;
+
+
+-- Re-join database to availability group
+ALTER DATABASE [DBname] SET HADR AVAILABILITY GROUP = [SENetwork_AG];
+ALTER DATABASE [dbname] SET HADR RESUME;
+
+ALTER DATABASE MasterDataManagement SET HADR on
+
+ALTER DATABASE MasterDataManagement SET HADR AVAILABILITY GROUP = GXATKU_Global_Tracking_Tool_AAG; 
+
+ALTER AVAILABILITY GROUP [EWSSP2013CH] ADD DATABASE [APCH01_enh-app_ph_OR] 

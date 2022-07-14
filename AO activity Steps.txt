@@ -1,0 +1,93 @@
+1) Remove database from AG
+USE [master]
+GO
+ALTER AVAILABILITY GROUP [EWSSP2013CH]
+REMOVE DATABASE [DB_NAME];
+GO
+
+2) Shrink log file (change recovery mode to simple before shrinking)
+alter database [DB_NAME] set recovery simple
+
+USE [DB_NAME]
+GO
+DBCC SHRINKFILE (N'DB_LOGICAL_LOG_FILE_NAME' , 0, TRUNCATEONLY)
+GO
+
+alter database [DB_NAME] set recovery Full 
+
+3)Take FUll backup
+
+BACKUP DATABASE [DB_NAME] 
+TO  DISK = N'L:\AO_SYNC\DB_NAME.bak' WITH NOFORMAT, NOINIT,  
+SKIP, NOREWIND, NOUNLOAD, COMPRESSION,  STATS = 10
+GO
+
+4) Take t-log backup
+
+backup log Online_Search_appliance_service_application_CrawlStore to disk ='L:\AO_SYNC\DB_NAME.trn'with  COMPRESSION,  STATS = 10
+
+5) move the full and tlog backups from primary to secondary
+
+L:\AO_SYNC to \\GLCHBS-SP360180\l$\AO_SYNC
+
+The files which gets copied to seconday please move them to folder L:\AO_SYNC\copied_to_secondary from L:\AO_SYNC in primary server 
+
+6)Restore full backup from primary in secondary
+
+USE [master]
+RESTORE DATABASE [DB_NAME] FROM  DISK = N'L:\AO_SYNC\DB_NAME.bak' WITH  FILE = 1,  NORECOVERY,  NOUNLOAD,  REPLACE,  STATS = 5
+GO
+
+7) Restore TLog backup from primary in secondary
+
+RESTORE LOG [DB_NAME] FROM  DISK = N'L:\AO_SYNC\DB_NAME.trn' WITH  FILE = 1,  NORECOVERY,  NOUNLOAD,  STATS = 10
+GO
+
+8) Add DB in AAG group from primary
+
+USE master
+ALTER AVAILABILITY GROUP EWSSP2013CH ADD DATABASE [Online_Search_appliance_service_application]  
+
+9) Join the database to AAG group from secondary: 
+
+-- Wait for the replica to start communicating
+begin try
+declare @conn bit
+declare @count int
+declare @replica_id uniqueidentifier 
+declare @group_id uniqueidentifier
+set @conn = 0
+set @count = 30 -- wait for 5 minutes 
+
+if (serverproperty('IsHadrEnabled') = 1)
+	and (isnull((select member_state from master.sys.dm_hadr_cluster_members where upper(member_name COLLATE Latin1_General_CI_AS) = upper(cast(serverproperty('ComputerNamePhysicalNetBIOS') as nvarchar(256)) COLLATE Latin1_General_CI_AS)), 0) <> 0)
+	and (isnull((select state from master.sys.database_mirroring_endpoints), 1) = 0)
+begin
+    select @group_id = ags.group_id from master.sys.availability_groups as ags where name = N'EWSSP2013CH'
+	select @replica_id = replicas.replica_id from master.sys.availability_replicas as replicas where upper(replicas.replica_server_name COLLATE Latin1_General_CI_AS) = upper(@@SERVERNAME COLLATE Latin1_General_CI_AS) and group_id = @group_id
+	while @conn <> 1 and @count > 0
+	begin
+		set @conn = isnull((select connected_state from master.sys.dm_hadr_availability_replica_states as states where states.replica_id = @replica_id), 1)
+		if @conn = 1
+		begin
+			-- exit loop when the replica is connected, or if the query cannot find the replica status
+			break
+		end
+		waitfor delay '00:00:10'
+		set @count = @count - 1
+	end
+end
+end try
+begin catch
+	-- If the wait loop fails, do not stop execution of the alter database statement
+end catch
+ALTER DATABASE [DB_NAME] SET HADR AVAILABILITY GROUP = [EWSSP2013CH];
+
+GO
+
+10) Wait for db to initialize after joining. Check its status from SQL server databases and AAG databases. If required, navigate to the secondary instance AAG and Join the DB from secondary in AAG group.
+
+11) Check the sync parameters in AAG dashboard to verify database is synchronizing.
+Also validate that the database is in ynchronized status in primary and synchronizing status in secondary.
+
+

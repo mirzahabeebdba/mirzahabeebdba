@@ -1,0 +1,2 @@
+to get list of all instances of the network from this servers
+[System.Data.Sql.SqlDataSourceEnumerator]::Instance.GetDataSources()

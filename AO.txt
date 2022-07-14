@@ -1,0 +1,63 @@
+This TSQL Script can be run on primary or principal server, this check will return output providing infomration about Group Name, Replica Server Name, Node Name, Role Description, DB Name, Synchronization State Description, Synchronization Health Description.
+Netstat –an | find “5022”
+
+-- List AG Replica Details 
+select n.group_name,n.replica_server_name,n.node_name,rs.role_desc 
+from sys.dm_hadr_availability_replica_cluster_nodes n 
+join sys.dm_hadr_availability_replica_cluster_states cs 
+on n.replica_server_name = cs.replica_server_name 
+join sys.dm_hadr_availability_replica_states rs  
+on rs.replica_id = cs.replica_id 
+ 
+-- AG Status 
+DECLARE @HADRName    varchar(25) 
+SET @HADRName = @@SERVERNAME 
+select n.group_name,n.replica_server_name,n.node_name,rs.role_desc, 
+db_name(drs.database_id) as 'DBName',drs.synchronization_state_desc,drs.synchronization_health_desc 
+from sys.dm_hadr_availability_replica_cluster_nodes n 
+join sys.dm_hadr_availability_replica_cluster_states cs 
+on n.replica_server_name = cs.replica_server_name 
+join sys.dm_hadr_availability_replica_states rs  
+on rs.replica_id = cs.replica_id 
+join sys.dm_hadr_database_replica_states drs 
+on rs.replica_id=drs.replica_id 
+where n.replica_server_name <> @HADRName
+
+==
+Check latency
+
+SELECT CAST(DB_NAME(database_id)as VARCHAR(40)) database_name,
+Convert(VARCHAR(20),last_commit_time,22) last_commit_time
+,CAST(CAST(((DATEDIFF(s,last_commit_time,GetDate()))/3600) as varchar) + ' hour(s), '
++ CAST((DATEDIFF(s,last_commit_time,GetDate())%3600)/60 as varchar) + ' min, '
++ CAST((DATEDIFF(s,last_commit_time,GetDate())%60) as varchar) + ' sec' as VARCHAR(30)) time_behind_primary
+,redo_queue_size
+,redo_rate
+,CONVERT(VARCHAR(20),DATEADD(mi,(redo_queue_size/redo_rate/60.0),GETDATE()),22) estimated_completion_time
+,CAST((redo_queue_size/redo_rate/60.0) as decimal(10,2)) [estimated_recovery_time_minutes]
+,(redo_queue_size/redo_rate) [estimated_recovery_time_seconds]
+,CONVERT(VARCHAR(20),GETDATE(),22) [current_time]
+FROM sys.dm_hadr_database_replica_states
+WHERE last_redone_time is not null order by time_behind_primary desc ;
+
+GO
+
+===
+--to get end point connect status
+SELECT e.name AS mirror_endpoint_name
+    ,s.name AS login_name
+    ,p.permission_name
+    ,p.state_desc AS permission_state
+    ,e.state_desc endpoint_state
+FROM sys.server_permissions p
+INNER JOIN sys.endpoints e ON p.major_id = e.endpoint_id
+INNER JOIN sys.server_principals s ON p.grantee_principal_id = s.principal_id
+WHERE p.class_desc = 'ENDPOINT'
+    AND e.type_desc = 'DATABASE_MIRRORING'
+
+Hadr_endpoint	Nanet\SYS_SQLSY6	CONNECT	GRANT	STARTED
+
+===
+
+
+

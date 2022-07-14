@@ -1,0 +1,725 @@
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+-- ===================================================================================
+--				08-Dec-2008 -- Added DB temp table to exclude sys tables
+-- Description:	All encompassing SQL performance report that tests numerous KPIS
+/*
+
+		Original Notes: 
+			This collection of SQL inspects various DMVs, this information can be used to highlight
+			what areas of the SQL Server sever can be improved. The following items are reported on:
+	  
+					1. Causes of the server waits
+					2. Databases using the most IO
+					3. Count of missing indexes, by database
+					4. Most important missing indexes
+					5. Unused Indexes
+					6. Most costly indexes (high maintenance)
+					7. Most used indexes
+					8. Most fragmented indexes
+					9. Most costly queries, by average IO
+					10. Most costly queries, by average CPU
+					11. Most costly CLR queries, by average CLR time
+					12. Most executed queries
+					13. Queries suffering most from blocking
+					14. Queries with the lowest plan reuse
+
+	********************************************************************************************************
+
+	PRE-REQUISITE
+	1. Best to have as much DMV data as possible (When last rebooted? Want daily? weekly, monthly, quarterly results).
+	2. Output HSR to Grid? Text? File? Table? Reporting Services? If set results to text, get the actual sprocs in output.
+	3. Decide if want to put results in a database? Later analysis, historical comparisons, impact of month-end, quarter etc. 
+	4. Decide if want to run the defrag code, can be expensive.
+	5. Decide if want to iterate over all databases for a specific aspect (e.g. average IO).
+
+
+	FOLLOW-UP (After running this routine's SQL)
+	1. Investigative work, use dba_SearchDB/dba_SearchDBServer for analysis.
+	2. Demonstrate/measure the improvement: Find underlying queries, apply change, run stats IO ON, see execuation plan.
+	3. SQL Server Best Practices Analyzer.
+
+
+	INTRUSIVE INSPECTION (Follow-up and corollary to this work)
+	1. Trace typical workload (day, monthend? etc)
+	2. Reduce recorded queries to query signatures (Ben-Gan's method)
+	3. Calculate the total duration for similar query patterns
+	4. Tune the most important query patterns in DTA, then apply recommended indexes/stats.
+
+	********************************************************************************************************
+
+	EXTRA NOTES
+	1. Be careful when running this on production server too often. As the report itself
+	   will appear in your performance reports I/O, CPU.
+	2. Running on all databases on a server will take a long time.
+	3. Exclude system tables apart from tempDB unless for specific reasons.
+  
+	PARAMETERS
+	@MODE: The type of report to run
+		0: Run for all databases on a server including system databases (master,tempdb etc)
+		1: Run for all databases on a server apart from system databases
+		2: Run for a specific database
+		3: Run for all databases that match a specific LIKE pattern eg 'strategies_jobsite%'
+	@DatabaseName: The name or partial search string if MODE is 2 or 3
+		e.g MODE = 2 then a whole name should be provided
+			MODE = 3 then a partial string with wildcards should be provided if no wildcards
+					 are found in the string then I will add % to the start and end.
+
+	Example Usage
+	
+	EXEC dbo.usp_sql_rpt_database_performance_stats 3, 'somedatabase%'
+	EXEC dbo.usp_sql_rpt_database_performance_stats --defaults to all DBs
+*/
+-- ========================================================================================================
+CREATE PROCEDURE usp_sql_rpt_database_performance_stats
+	@MODE TINYINT = 0,
+	@DatabaseName NVARCHAR(255) = NULL
+AS
+BEGIN
+	
+	SET NOCOUNT ON;
+
+   	/*********************************************************************************************************/
+
+	-- Do not lock anything, and do not get held up by any locks. 
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+
+	/*
+		Populate temp table var with list of database IDs that we DO want to report on
+		depending on the parameters provided. The 4 system databases (master,msdb,model,tempdb) 
+		have IDs of 1-4 so we ignore those with MODE 1
+	*/
+	
+	-- Make sure params are correct
+
+	IF @MODE IN(2,3) AND COALESCE(@DatabaseName,'')='' OR LEN(@DatabaseName)=0
+	  RAISERROR ('No value was provided for the parameter @DatabaseName',15,1)
+
+	IF @MODE = 3
+	  BEGIN
+			IF CHARINDEX('%',@DatabaseName)=0
+			  SELECT @DatabaseName = '%' + @DatabaseName + '%'
+	  END
+
+
+	CREATE TABLE #DB(DB INT)
+	INSERT INTO #DB
+	SELECT database_id
+	FROM	sys.databases
+	WHERE	1 = CASE
+					WHEN @MODE = 0 THEN 1
+					WHEN @MODE = 1 AND database_id>4 THEN 1
+					WHEN @MODE = 2 AND DB_ID(@DatabaseName) = database_id THEN 1
+					WHEN @MODE = 3 AND Name LIKE @DatabaseName THEN 1
+				END
+	
+	SELECT 'Identify what is causing the waits.' AS [Step01];
+	/************************************************************************************/
+	/* STEP01.																			*/
+	/* Purpose: Identify what is causing the waits.										*/
+	/* Notes: 1.																		*/
+	/************************************************************************************/
+	SELECT TOP 10
+		[Wait type] = wait_type,
+		[Wait time (s)] = wait_time_ms / 1000,
+		[% waiting] = CONVERT(DECIMAL(12,2), wait_time_ms * 100.0 / SUM(wait_time_ms) OVER())
+	FROM sys.dm_os_wait_stats
+	WHERE wait_type NOT LIKE '%SLEEP%' 
+	--AND wait_type NOT LIKE 'CLR_%'
+	ORDER BY wait_time_ms DESC;
+
+
+	SELECT 'Identify what databases are reading the most logical pages.' AS [Step02a];
+	/************************************************************************************/
+	/* STEP02a.																			*/
+	/* Purpose: Identify what databases are reading the most logical pages.				*/
+	/* Notes : 1. This should highlight the databases to target for best improvement.	*/
+	/*		   2. Watch out for tempDB, a high value is suggestive.						*/	
+	/************************************************************************************/
+	-- Total reads by DB
+	SELECT TOP 10 
+			[Total Reads] = SUM(total_logical_reads)
+			,[Execution count] = SUM(qs.execution_count)
+			,DatabaseName = DB_NAME(qt.dbid)
+	FROM sys.dm_exec_query_stats qs
+	CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) as qt
+	WHERE dbid IN(SELECT DB FROM #DB)
+	GROUP BY DB_NAME(qt.dbid)
+	ORDER BY [Total Reads] DESC;
+
+
+	SELECT 'Identify what databases are writing the most logical pages.' AS [Step02b];
+	/************************************************************************************/
+	/* STEP02b.																			*/
+	/* Purpose: Identify what databases are writing the most logical pages.				*/
+	/* Notes : 1. This should highlight the databases to target for best improvement.	*/
+	/*		   2. Watch out for tempDB, a high value is suggestive.						*/	
+	/************************************************************************************/
+	-- Total Writes by DB
+
+	SELECT TOP 10 
+			[Total Writes] = SUM(total_logical_writes)
+			,[Execution count] = SUM(qs.execution_count)
+			,DatabaseName = DB_NAME(qt.dbid)
+	FROM sys.dm_exec_query_stats qs
+	CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) as qt
+	WHERE dbid IN(SELECT DB FROM #DB)			
+	GROUP BY DB_NAME(qt.dbid)
+	ORDER BY [Total Writes] DESC;
+
+
+
+
+	SELECT 'Count of missing indexes, by databases.' AS [Step03];
+	/************************************************************************** ******************/
+	/* STEP03.																			*/
+	/* Purpose: Identify the number of missing (or incomplete indexes), across ALL databases.	 */
+	/* Notes : 1. This should highlight the databases to target for best improvement.			 */
+	/*********************************************************************************************/
+	SELECT 
+		DatabaseName = DB_NAME(database_id)
+		,[Number Indexes Missing] = count(*) 
+	FROM sys.dm_db_missing_index_details
+	WHERE database_id IN(SELECT DB FROM #DB)
+	GROUP BY DB_NAME(database_id)
+	ORDER BY 2 DESC;
+
+
+	SELECT 'Identify the missing indexes (TOP 10), across ALL databases.' AS [Step04];
+	/****************************************************************************************************/
+	/* STEP04.																			*/
+	/* Purpose: Identify the missing (or incomplete indexes) (TOP 20), for ALL databases.				*/
+	/* Notes : 1. Could combine above with number of reads/writes a DB has since reboot, but this takes */
+	/*		   into account how often index could have been used, and estimates a 'realcost'			*/
+	/****************************************************************************************************/
+	SELECT  TOP 10
+			[Total Cost]  = ROUND(avg_total_user_cost * avg_user_impact * (user_seeks + user_scans),0) 
+			, avg_user_impact -- Query cost would reduce by this amount, on average.
+			, TableName = statement
+			, [EqualityUsage] = equality_columns 
+			, [InequalityUsage] = inequality_columns
+			, [Include Cloumns] = included_columns
+	FROM		sys.dm_db_missing_index_groups g 
+	INNER JOIN	sys.dm_db_missing_index_group_stats s ON s.group_handle = g.index_group_handle 
+	INNER JOIN	sys.dm_db_missing_index_details d ON d.index_handle = g.index_handle
+	WHERE database_id IN(SELECT DB FROM #DB)
+	ORDER BY [Total Cost] DESC;
+
+
+	SELECT 'Identify which indexes are not being used, across ALL databases.' AS [Step05];
+	/*******************************************************************************************************/
+	/* STEP05.																			*/
+	/* Purpose: Identify which indexes are not being used, for a given database.							*/
+	/* Notes: 1. These will have a deterimental impact on any updates/deletions.							*/
+	/*		  Remove if possible (can see the updates in user_updates and system_updates fields)			*/
+	/*		  2. Systems means DBCC commands, DDL commands, or update statistics - so can typically ignore.	*/
+	/*		  3. The template below uses the sp_MSForEachDB, this is because joining on sys.databases		*/
+	/*			gives incorrect results (due to sys.indexes taking into account the current database only).	*/ 	
+	/********************************************************************************************************/
+	-- Create required table structure only.
+	-- Note: this SQL must be the same as in the Database loop given in following step.
+	SELECT TOP 1
+			DatabaseName = DB_NAME()
+			,TableName = OBJECT_NAME(s.[object_id])
+			,IndexName = i.name
+			,user_updates	
+			,system_updates	
+			-- Useful fields below:
+			--, *
+	INTO #TempUnusedIndexes
+	FROM   sys.dm_db_index_usage_stats s 
+	INNER JOIN sys.indexes i ON  s.[object_id] = i.[object_id] 
+		AND s.index_id = i.index_id 
+	WHERE  s.database_id = DB_ID()
+		AND OBJECTPROPERTY(s.[object_id], 'IsMsShipped') = 0
+		AND	user_seeks = 0
+		AND user_scans = 0 
+		AND user_lookups = 0
+		-- Below may not be needed, they tend to reflect creation of stats, backups etc...
+	--	AND	system_seeks = 0
+	--	AND system_scans = 0
+	--	AND system_lookups = 0
+		AND s.[object_id] = -999  -- Dummy value, just to get table structure.
+	;
+
+	-- Loop around all the databases on the server.
+	EXEC sp_MSForEachDB	'USE [?]; 
+	IF DB_ID() IN(SELECT DB FROM #DB)
+	BEGIN
+	-- Table already exists.
+	INSERT INTO #TempUnusedIndexes 
+	SELECT TOP 10	
+			DatabaseName = DB_NAME()
+			,TableName = OBJECT_NAME(s.[object_id])
+			,IndexName = i.name
+			,user_updates	
+			,system_updates	
+			-- Useful fields below:
+			--, *
+	FROM   sys.dm_db_index_usage_stats s 
+	INNER JOIN sys.indexes i ON  s.[object_id] = i.[object_id] 
+		AND s.index_id = i.index_id 
+	WHERE  s.database_id = DB_ID()
+		AND OBJECTPROPERTY(s.[object_id], ''IsMsShipped'') = 0
+		AND	user_seeks = 0
+		AND user_scans = 0 
+		AND user_lookups = 0
+		AND i.name IS NOT NULL	-- I.e. Ignore HEAP indexes.
+		-- Below may not be needed, they tend to reflect creation of stats, backups etc...
+	--	AND	system_seeks = 0
+	--	AND system_scans = 0
+	--	AND system_lookups = 0
+	ORDER BY user_updates DESC
+	END;
+	'
+
+	-- Select records.
+	SELECT TOP 10 *  FROM #TempUnusedIndexes ORDER BY [user_updates]  DESC
+	-- Tidy up.
+	DROP TABLE #TempUnusedIndexes
+
+
+	SELECT 'Identify which indexes are the most high maintenance (TOP 10), across ALL databases.' AS [Step06];
+	/********************************************************************************************************/
+	/* STEP06.																			*/
+	/* Purpose: Identify which indexes are the most high maintenance (TOP 10), for a given database.		*/
+	/* Notes: 1. These indexes are updated the most, may want to review if the are necessary.				*/
+	/*        2. Another version shows writes per read.								  						*/
+	/*		  3. Systems means DBCC commands, DDL commands, or update statistics - so can typically ignore. */
+	/*		  4. The template below uses the sp_MSForEachDB, this is because joining on sys.databases		*/
+	/*			gives incorrect results (due to sys.indexes taking into account the current database only).	*/ 	
+	/********************************************************************************************************/
+	-- Create required table structure only.
+	-- Note: this SQL must be the same as in the Database loop given in following step.
+	SELECT TOP 1
+			[Maintenance cost]  = (user_updates + system_updates)
+			,[Retrieval usage] = (user_seeks + user_scans + user_lookups)
+			,DatabaseName = DB_NAME()
+			,TableName = OBJECT_NAME(s.[object_id])
+			,IndexName = i.name
+			-- Useful fields below:
+	--		,user_updates  
+	--		,system_updates
+	--		,user_seeks 
+	--		,user_scans 
+	--		,user_lookups 
+	--		,system_seeks 
+	--		,system_scans 
+	--		,system_lookups 
+			-- Useful fields below:
+	--		,*
+	INTO #TempMaintenanceCost
+	FROM   sys.dm_db_index_usage_stats s 
+	INNER JOIN sys.indexes i ON  s.[object_id] = i.[object_id] 
+		AND s.index_id = i.index_id
+	WHERE s.database_id = DB_ID() 
+		AND OBJECTPROPERTY(s.[object_id], 'IsMsShipped') = 0
+		AND (user_updates + system_updates) > 0 -- Only report on active rows.
+		AND s.[object_id] = -999  -- Dummy value, just to get table structure.
+	;
+
+	-- Loop around all the databases on the server.
+	EXEC sp_MSForEachDB	'USE [?]; 
+	IF DB_ID() IN(SELECT DB FROM #DB)
+	BEGIN
+	-- Table already exists.
+	INSERT INTO #TempMaintenanceCost 
+	SELECT TOP 10
+			[Maintenance cost]  = (user_updates + system_updates)
+			,[Retrieval usage] = (user_seeks + user_scans + user_lookups)
+			,DatabaseName = DB_NAME()
+			,TableName = OBJECT_NAME(s.[object_id])
+			,IndexName = i.name
+			-- Useful fields below:
+	--		,user_updates  
+	--		,system_updates
+	--		,user_seeks 
+	--		,user_scans 
+	--		,user_lookups 
+	--		,system_seeks 
+	--		,system_scans 
+	--		,system_lookups 
+			-- Useful fields below:
+	--		,*
+	FROM   sys.dm_db_index_usage_stats s 
+	INNER JOIN sys.indexes i ON  s.[object_id] = i.[object_id] 
+		AND s.index_id = i.index_id
+	WHERE s.database_id = DB_ID() 
+		AND i.name IS NOT NULL	-- I.e. Ignore HEAP indexes.
+		AND OBJECTPROPERTY(s.[object_id], ''IsMsShipped'') = 0
+		AND (user_updates + system_updates) > 0 -- Only report on active rows.
+	ORDER BY [Maintenance cost]  DESC
+	END;
+	'
+
+	-- Select records.
+	SELECT TOP 10 *  FROM #TempMaintenanceCost ORDER BY [Maintenance cost]  DESC
+	-- Tidy up.
+	DROP TABLE #TempMaintenanceCost
+
+
+	SELECT 'Identify which indexes are the most often used (TOP 10), across ALL databases.' AS [Step07];
+	/********************************************************************************************************/
+	/* STEP07.																			*/
+	/* Purpose: Identify which indexes are the most used (TOP 10), for a given database.		     		*/
+	/* Notes: 1. These indexes are updated the most, may want to review if the are necessary.		   		*/
+	/*		  2. Systems means DBCC commands, DDL commands, or update statistics - so can typically ignore. */
+	/*		  3. Ensure Statistics are up-to-date for these.						 						*/
+	/*		  4. The template below uses the sp_MSForEachDB, this is because joining on sys.databases		*/
+	/*			gives incorrect results (due to sys.indexes taking into account the current database only).	*/ 	
+	/********************************************************************************************************/
+
+	-- Create required table structure only.
+	-- Note: this SQL must be the same as in the Database loop given in following step.
+	SELECT TOP 1
+			[Usage] = (user_seeks + user_scans + user_lookups)
+			,DatabaseName = DB_NAME()
+			,TableName = OBJECT_NAME(s.[object_id])
+			,IndexName = i.name
+			-- Useful fields below:
+	--		,user_updates  
+	--		,system_updates
+	--		,user_seeks 
+	--		,user_scans 
+	--		,user_lookups 
+	--		,system_seeks 
+	--		,system_scans 
+	--		,system_lookups 
+			-- Useful fields below:
+			--, *
+	INTO #TempUsage
+	FROM   sys.dm_db_index_usage_stats s 
+	INNER JOIN sys.indexes i ON s.[object_id] = i.[object_id] 
+		AND s.index_id = i.index_id 
+	WHERE   s.database_id = DB_ID() 
+		AND OBJECTPROPERTY(s.[object_id], 'IsMsShipped') = 0
+		AND (user_seeks + user_scans + user_lookups) > 0 -- Only report on active rows.
+		AND s.[object_id] = -999  -- Dummy value, just to get table structure.
+	;
+
+	-- Loop around all the databases on the server.
+	EXEC sp_MSForEachDB	'USE [?]; 
+	IF DB_ID() IN(SELECT DB FROM #DB)
+	BEGIN
+	-- Table already exists.
+	INSERT INTO #TempUsage 
+	SELECT TOP 10
+			[Usage] = (user_seeks + user_scans + user_lookups)
+			,DatabaseName = DB_NAME()
+			,TableName = OBJECT_NAME(s.[object_id])
+			,IndexName = i.name
+			-- Useful fields below:
+	--		,user_updates  
+	--		,system_updates
+	--		,user_seeks 
+	--		,user_scans 
+	--		,user_lookups 
+	--		,system_seeks 
+	--		,system_scans 
+	--		,system_lookups 
+			-- Useful fields below:
+			--, *
+	FROM   sys.dm_db_index_usage_stats s 
+	INNER JOIN sys.indexes i ON s.[object_id] = i.[object_id] 
+		AND s.index_id = i.index_id 
+	WHERE   s.database_id = DB_ID() 
+		AND i.name IS NOT NULL	-- I.e. Ignore HEAP indexes.
+		AND OBJECTPROPERTY(s.[object_id], ''IsMsShipped'') = 0
+		AND (user_seeks + user_scans + user_lookups) > 0 -- Only report on active rows.
+	ORDER BY [Usage]  DESC
+	END;
+	'
+
+	-- Select records.
+	SELECT TOP 10 * FROM #TempUsage ORDER BY [Usage] DESC
+	-- Tidy up.
+	DROP TABLE #TempUsage
+
+
+	SELECT 'Identify which indexes are the most logically fragmented (TOP 10), across ALL databases.' AS [Step08];
+	/********************************************************************************************/
+	/* STEP08.																			*/
+	/* Purpose: Identify which indexes are the most fragmented (TOP 10), for a given database.  */
+	/* Notes: 1. Defragmentation increases IO.													*/
+	/********************************************************************************************/
+	---- Create required table structure only.
+	---- Note: this SQL must be the same as in the Database loop given in following step.
+	SELECT TOP 1 
+			DatbaseName = DB_NAME()
+			,TableName = OBJECT_NAME(s.[object_id])
+			,IndexName = i.name
+			,[Fragmentation %] = ROUND(avg_fragmentation_in_percent,2)
+			-- Useful fields below:
+			--, *
+	INTO #TempFragmentation
+	FROM sys.dm_db_index_physical_stats(db_id(),null, null, null, null) s
+	INNER JOIN sys.indexes i ON s.[object_id] = i.[object_id] 
+		AND s.index_id = i.index_id 
+	WHERE s.[object_id] = -999  -- Dummy value, just to get table structure.
+	;
+	--
+	---- Loop around all the databases on the server. Must put ( ) round the EXEC for some reason>>>??
+	EXEC sp_MSForEachDB	'USE [?]; 
+	IF DB_ID() IN(SELECT DB FROM #DB)
+	BEGIN
+	---- Table already exists.
+	INSERT INTO #TempFragmentation 
+	EXEC(''SELECT TOP 10 DatbaseName = DB_NAME(),TableName = OBJECT_NAME(s.[object_id]),IndexName = i.name,[Fragmentation %] = ROUND(avg_fragmentation_in_percent,2)
+	FROM sys.dm_db_index_physical_stats(DB_ID(),null, null, null, null) s
+	INNER JOIN sys.indexes i ON s.[object_id] = i.[object_id] 
+		AND s.index_id = i.index_id 
+	WHERE s.database_id = DB_ID() 
+		  AND i.name IS NOT NULL	
+		AND OBJECTPROPERTY(s.[object_id], ''''IsMsShipped'''') = 0
+	ORDER BY [Fragmentation %] DESC'');
+	END;
+	'
+	--
+	---- Select records.
+	SELECT TOP 10 * FROM #TempFragmentation ORDER BY [Fragmentation %] DESC
+	---- Tidy up.
+	DROP TABLE #TempFragmentation
+
+
+	SELECT 'Identify which (cached plan) queries are the most costly by average IO (TOP 10), across ALL databases.' AS [Step09];
+	/****************************************************************************************************/
+	/* STEP09.																			*/
+	/* Purpose: Identify which queries are the most costly by IO (TOP 10), across ALL databases.	    */
+	/* Notes: 1. This could be areas that need optimisation, maybe they crosstab with missing indexes?  */
+	/*		  2. Decide if average or total is more important.											*/
+	/****************************************************************************************************/
+	SELECT TOP 10 
+			[Average IO] = (total_logical_reads + total_logical_writes) / qs.execution_count
+			,[Total IO] = (total_logical_reads + total_logical_writes)
+			,[Execution count] = qs.execution_count
+			,[Individual Query] = SUBSTRING (qt.text,qs.statement_start_offset/2, 
+			 (CASE WHEN qs.statement_end_offset = -1 
+				THEN LEN(CONVERT(NVARCHAR(MAX), qt.text)) * 2 
+			  ELSE qs.statement_end_offset END - qs.statement_start_offset)/2) 
+			,[Parent Query] = qt.text
+			,DatabaseName = DB_NAME(qt.dbid)
+	FROM sys.dm_exec_query_stats qs
+	CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) as qt
+	WHERE qt.dbid IN(SELECT DB FROM #DB)
+	ORDER BY [Average IO] DESC;
+
+
+	SELECT 'Identify which (cached plan) queries are the most costly by average CPU (TOP 10), across ALL databases.' AS [Step10];
+	/****************************************************************************************************/
+	/* STEP10.																			*/
+	/* Purpose: Identify which queries are the most costly by CPU (TOP 10), across ALL databases.	    */
+	/* Notes: 1. This could be areas that need optimisation, maybe they crosstab with missing indexes?  */
+	/*		  2. Decide if average or total is more important.						    */
+	/****************************************************************************************************/
+	SELECT TOP 10 
+			[Average CPU used] = total_worker_time / qs.execution_count
+			,[Total CPU used] = total_worker_time
+			,[Execution count] = qs.execution_count
+			,[Individual Query] = SUBSTRING (qt.text,qs.statement_start_offset/2, 
+			 (CASE WHEN qs.statement_end_offset = -1 
+				THEN LEN(CONVERT(NVARCHAR(MAX), qt.text)) * 2 
+			  ELSE qs.statement_end_offset END - qs.statement_start_offset)/2)
+			,[Parent Query] = qt.text
+			,DatabaseName = DB_NAME(qt.dbid)
+	FROM sys.dm_exec_query_stats qs
+	CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) as qt
+	WHERE qt.dbid IN(SELECT DB FROM #DB)
+	ORDER BY [Average CPU used] DESC;
+
+
+	SELECT 'Identify which CLR queries, use the most average CLR time (TOP 10), across ALL databases.' AS [Step11];
+	/****************************************************************************************************/
+	/* STEP011.																			*/
+	/* Purpose: Identify which CLR queries, use the most avg CLR time (TOP 10), across ALL databases.   */
+	/* Notes: 1. Decide if average or total is more important.											*/
+	/****************************************************************************************************/
+	SELECT TOP 10 
+			[Average CLR Time] = total_clr_time / execution_count 
+			,[Total CLR Time] = total_clr_time 
+			,[Execution count] = qs.execution_count
+			,[Individual Query] = SUBSTRING (qt.text,qs.statement_start_offset/2, 
+			 (CASE WHEN qs.statement_end_offset = -1 
+				THEN LEN(CONVERT(NVARCHAR(MAX), qt.text)) * 2 
+			  ELSE qs.statement_end_offset END - qs.statement_start_offset)/2)
+			,[Parent Query] = qt.text
+			,DatabaseName = DB_NAME(qt.dbid)
+			-- Useful fields below:
+			--, *
+	FROM sys.dm_exec_query_stats as qs
+	CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) as qt
+	WHERE total_clr_time <> 0
+	AND qt.dbid IN(SELECT DB FROM #DB)
+	ORDER BY [Average CLR Time] DESC;
+
+
+	SELECT 'Identify which (cached plan) queries are executed most often (TOP 10), across ALL databases.' AS [Step12];
+	/********************************************************************************************/
+	/* STEP12.																			*/
+	/* Purpose: Identify which queries are executed most often (TOP 10), across ALL databases.  */
+	/* Notes: 1. These should be optimised. Ensure Statistics are up to date.					*/
+	/********************************************************************************************/
+	SELECT TOP 10 
+			[Execution count] = execution_count
+			,[Individual Query] = SUBSTRING (qt.text,qs.statement_start_offset/2, 
+			 (CASE WHEN qs.statement_end_offset = -1 
+				THEN LEN(CONVERT(NVARCHAR(MAX), qt.text)) * 2 
+			  ELSE qs.statement_end_offset END - qs.statement_start_offset)/2)
+			,[Parent Query] = qt.text
+			,DatabaseName = DB_NAME(qt.dbid)
+	FROM sys.dm_exec_query_stats qs
+	CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) as qt
+	WHERE qt.dbid IN(SELECT DB FROM #DB)
+	ORDER BY [Execution count] DESC;
+
+
+	SELECT 'Identify which (cached plan) queries suffer the most from blocking (TOP 10), across ALL databases.' AS [Step13];
+	/****************************************************************************************************/
+	/* STEP13.																			*/
+	/* Purpose: Identify which queries suffer the most from blocking (TOP 10), across ALL databases.    */
+	/* Notes: 1. This may have an impact on ALL queries.												*/
+	/*		  2. Decide if average or total is more important.											*/
+	/****************************************************************************************************/
+	SELECT TOP 10 
+			[Average Time Blocked] = (total_elapsed_time - total_worker_time) / qs.execution_count
+			,[Total Time Blocked] = total_elapsed_time - total_worker_time 
+			,[Execution count] = qs.execution_count
+			,[Individual Query] = SUBSTRING (qt.text,qs.statement_start_offset/2, 
+			 (CASE WHEN qs.statement_end_offset = -1 
+				THEN LEN(CONVERT(NVARCHAR(MAX), qt.text)) * 2 
+			  ELSE qs.statement_end_offset END - qs.statement_start_offset)/2) 
+			,[Parent Query] = qt.text
+			,DatabaseName = DB_NAME(qt.dbid)
+	FROM sys.dm_exec_query_stats qs
+	CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) as qt
+	WHERE qt.dbid IN(SELECT DB FROM #DB)
+	ORDER BY [Average Time Blocked] DESC;
+
+
+	SELECT 'What (cached plan) queries have the lowest plan reuse (Top 10), across ALL databases.' AS [Step14];
+	/************************************************************************************/
+	/* STEP14.																			*/
+	/* What queries, in the current database, have the lowest plan reuse (Top 10).		*/
+	/* Notes: 1.                              											*/
+	/************************************************************************************/
+	SELECT TOP 10
+			[Plan usage] = cp.usecounts
+			,[Individual Query] = SUBSTRING (qt.text,qs.statement_start_offset/2, 
+			 (CASE WHEN qs.statement_end_offset = -1 
+				THEN LEN(CONVERT(NVARCHAR(MAX), qt.text)) * 2 
+			  ELSE qs.statement_end_offset END - qs.statement_start_offset)/2)
+			,[Parent Query] = qt.text
+			,DatabaseName = DB_NAME(qt.dbid)
+			,cp.cacheobjtype
+			-- Useful fields below:
+			--, *
+	FROM sys.dm_exec_query_stats qs
+	CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) AS qt
+	INNER JOIN sys.dm_exec_cached_plans as cp on qs.plan_handle=cp.plan_handle
+	WHERE cp.plan_handle=qs.plan_handle
+	AND qt.dbid IN(SELECT DB FROM #DB)
+	ORDER BY [Plan usage] ASC;
+
+
+	-- MIGHT BE USEFUL
+
+
+
+	/* ALTERNATIVE. */
+	SELECT 'Identify what indexes have a high maintenance cost.' AS [Step15];
+	/* Purpose: Identify what indexes have a high maintenance cost. */
+	/* Notes : 1. This version shows writes per read, another version shows total updates without reads. */
+	SELECT 	TOP 10
+			DatabaseName = DB_NAME()
+			,TableName = OBJECT_NAME(s.[object_id])
+			,IndexName = i.name
+			,[Writes per read (User)] = user_updates / CASE WHEN (user_seeks + user_scans + user_lookups) = 0 
+																THEN 1 
+														   ELSE (user_seeks + user_scans + user_lookups) 
+													   END 
+			,[User writes] = user_updates
+			,[User reads] = user_seeks + user_scans + user_lookups
+			,[System writes] = system_updates
+			,[System reads] = system_seeks + system_scans + system_lookups
+			-- Useful fields below:
+			--, *
+	FROM   sys.dm_db_index_usage_stats s 
+			, sys.indexes i 
+	WHERE   s.[object_id] = i.[object_id] 
+		AND s.index_id = i.index_id 
+		AND s.database_id IN(SELECT DB FROM #DB)
+		AND OBJECTPROPERTY(s.[object_id], 'IsMsShipped') = 0
+	ORDER BY [Writes per read (User)] DESC;
+
+	SELECT 'Identify most expensive IO reads.' AS [Step16];
+	-- Total Reads by most expensive IO query
+	SELECT TOP 10 
+			[Total Reads] = total_logical_reads
+			,[Total Writes] = total_logical_writes
+			,[Execution count] = qs.execution_count
+			,[Individual Query] = SUBSTRING (qt.text,qs.statement_start_offset/2, 
+			 (CASE WHEN qs.statement_end_offset = -1 
+				THEN LEN(CONVERT(NVARCHAR(MAX), qt.text)) * 2 
+			  ELSE qs.statement_end_offset END - qs.statement_start_offset)/2) 
+			,[Parent Query] = qt.text
+			,DatabaseName = DB_NAME(qt.dbid)
+	FROM sys.dm_exec_query_stats qs
+	CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) as qt
+	WHERE	qt.dbid IN(SELECT DB FROM #DB)
+	ORDER BY [Total Reads] DESC;
+
+
+	SELECT 'Identify most expensive IO writes.' AS [Step17];
+	-- Total Writes by most expensive IO query
+	SELECT TOP 10 
+			[Total Writes] = total_logical_writes
+			,[Total Reads] = total_logical_reads
+			,[Execution count] = qs.execution_count
+			,[Individual Query] = SUBSTRING (qt.text,qs.statement_start_offset/2, 
+			 (CASE WHEN qs.statement_end_offset = -1 
+				THEN LEN(CONVERT(NVARCHAR(MAX), qt.text)) * 2 
+			  ELSE qs.statement_end_offset END - qs.statement_start_offset)/2)
+			,[Parent Query] = qt.text
+			,DatabaseName = DB_NAME(qt.dbid)
+	FROM sys.dm_exec_query_stats qs
+	CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) as qt
+	WHERE qt.dbid IN(SELECT DB FROM #DB)
+	ORDER BY [Total Writes] DESC;
+
+
+
+	SELECT 'Identify most reused cached query plans v1.' AS [Step18];
+	-- Most reused queries...
+	SELECT TOP 10 
+			[Run count] = usecounts
+			,[Query] = text
+			,DatabaseName = DB_NAME(qt.dbid)
+			,*
+	FROM sys.dm_exec_cached_plans cp
+	CROSS APPLY sys.dm_exec_sql_text(cp.plan_handle) as qt
+	WHERE qt.dbid IN(SELECT DB FROM #DB)
+	ORDER BY 1 DESC;
+
+	SELECT 'Identify most reused cached query plans v2.' AS [Step19];
+	-- The below does not give the same values as previosu step, maybe related to 
+	-- individual qry within the parent qry? 
+	SELECT TOP 10 
+			[Run count] = usecounts
+			,[Individual Query] = SUBSTRING (qt.text,qs.statement_start_offset/2, 
+			 (CASE WHEN qs.statement_end_offset = -1 
+				THEN LEN(CONVERT(NVARCHAR(MAX), qt.text)) * 2 
+			  ELSE qs.statement_end_offset END - qs.statement_start_offset)/2)
+			,[Parent Query] = qt.text
+			,DatabaseName = DB_NAME(qt.dbid)
+			,*
+	FROM sys.dm_exec_cached_plans cp
+	INNER JOIN sys.dm_exec_query_stats qs ON cp.plan_handle = qs.plan_handle
+	CROSS APPLY sys.dm_exec_sql_text(cp.plan_handle) as qt
+	WHERE qt.dbid IN(SELECT DB FROM #DB)
+	ORDER BY 1 DESC;
+
+	DROP TABLE #DB
+END
+GO
+

@@ -1,0 +1,34 @@
+--Back up databases
+The script shown in Listing A will back up all databases on your SQL server except the databases listed in and name not in
+
+--
+Listing A 
+ 
+ 
+
+Use master 
+
+go
+
+declare @IDENT INT, @sqlvarchar(1000), @DBNAME VARCHAR(200)
+
+select @IDENT=min(DBID) from SYSDATABASES WHERE [DBID] > 0 AND NAME NOT IN ('PUBS', 'NORTHWIND', 'TEMPDB')
+
+while @IDENT is not null
+
+begin
+
+       SELECT @DBNAME = NAME FROM SYSDATABASES WHERE DBID = @IDENT
+
+/*Change disk location here as required*/
+
+       SELECT @SQL = 'BACKUP DATABASE '+@DBNAME+' TO DISK = ''\\fileserver\my documents\sqlback\'+@DBNAME+'.BAK''WITH INIT'
+
+PRINT @SQL
+
+       EXEC (@SQL)
+
+       select @IDENT=min(DBID) from SYSDATABASES WHERE [DBID] > 0 and DBID>@IDENT AND NAME NOT IN ('PUBS', 'NORTHWIND', 'TEMPDB')
+
+end
+ 

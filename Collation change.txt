@@ -1,0 +1,25 @@
+Collation changing
+database level
+
+USE master;  
+GO  
+ALTER DATABASE [JDE-D] 
+COLLATE Chinese_PRC_CI_AS;  
+GO  
+USE master;  
+
+DATABASE LEVEL COLLATION CHANGE:
+
+OPEN CMD @ BIN PATH EX:C:\program Files\Microsoft SQL Server\MSSQL11.MSSQLSERVER\MSSQL\Binn
+Stop the SQL services
+open bin folder then copy the path of the serverfile and execute cmd prompt
+sqlservr -m -T4022 -T3659 -s"MSSQLSERVER" -q"SQL_Latin1_General_CP1_CI_AS"
+Start the SQL SERVER services 
+
+
+SERVER LEVEL COLLATION CHAGNE:
+COLLATION CHANGE 
+
+net stop INSTANCE NAME
+
+sqlservr -m -T4022 -T3659 -s"SQLEXP2014" -q"Latin1_General_CI_AS"

@@ -1,0 +1,8 @@
+--check control server privileges
+
+SELECT sp.name 'Login'  
+FROM sys.server_principals sp 
+   JOIN sys.server_permissions perms 
+     ON sp.principal_id = perms.grantee_principal_id 
+WHERE perms.type = 'CL'      
+  AND perms.state = 'G';

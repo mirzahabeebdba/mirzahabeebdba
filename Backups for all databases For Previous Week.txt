@@ -1,0 +1,100 @@
+----------------------------------------------------------
+-- Database Backups for all databases For Previous Week --
+---------------------------------------------------------- 
+SELECT  
+   CONVERT(CHAR(100), SERVERPROPERTY('Servername')) AS Server, 
+   msdb.dbo.backupset.database_name,  
+   msdb.dbo.backupset.backup_start_date,
+   CAST(CAST(msdb.dbo.backupset.backup_size / 1000000 AS INT) AS VARCHAR(14)) + ' ' + 'MB' AS bkSize, 
+   msdb.dbo.backupset.backup_finish_date, 
+   msdb.dbo.backupset.expiration_date,
+   CAST(DATEDIFF(second, msdb.dbo.backupset.backup_start_date,msdb.dbo.backupset.backup_finish_date) AS VARCHAR(4)) + ' ' + 'Seconds' TimeTaken, 
+   CASE msdb..backupset.type
+	WHEN 'D' THEN 'Full'  
+	WHEN 'I' THEN 'Differential'
+        WHEN 'L' THEN 'Log'  
+   END AS backup_type,  
+   msdb.dbo.backupset.user_name ,
+   msdb.dbo.backupset.recovery_model ,
+   msdb.dbo.backupmediafamily.physical_device_name,
+   msdb.dbo.backupmediafamily.logical_device_name,   
+   msdb.dbo.backupset.name AS backupset_name, 
+   msdb.dbo.backupset.description
+     
+FROM   msdb.dbo.backupmediafamily  
+   INNER JOIN msdb.dbo.backupset ON msdb.dbo.backupmediafamily.media_set_id = msdb.dbo.backupset.media_set_id 
+WHERE  (CONVERT(datetime, msdb.dbo.backupset.backup_start_date, 102) >= GETDATE() - 10) 
+ORDER BY 
+  msdb.dbo.backupset.backup_finish_date desc, 
+   msdb.dbo.backupset.database_name,
+   backup_type
+
+================================================================
+
+----------------------------------------------------------
+-- Database Backups for all databases For Previous Week --
+---------------------------------------------------------- 
+SELECT  
+   CONVERT(CHAR(100), SERVERPROPERTY('Servername')) AS Server, 
+   s.database_name,  
+   s.backup_start_date,
+   CAST(CAST(s.backup_size / 1000000 AS INT) AS VARCHAR(14)) + ' ' + 'MB' AS bkSize, 
+   s.backup_finish_date, 
+   s.expiration_date,
+   CAST(DATEDIFF(second, s.backup_start_date,s.backup_finish_date) AS VARCHAR(4)) + ' ' + 'Seconds' TimeTaken, 
+   CAST(s.first_lsn AS VARCHAR(50)) AS first_lsn,
+   CAST(s.last_lsn AS VARCHAR(50)) AS last_lsn,
+   CASE s.type
+	WHEN 'D' THEN 'Full'  
+	WHEN 'I' THEN 'Differential'
+        WHEN 'L' THEN 'Log'  
+   END AS backup_type,  
+   s.recovery_model ,
+   m.logical_device_name,  
+   m.physical_device_name,   
+   s.name AS backupset_name, 
+   s.description
+     
+FROM   msdb.dbo.backupmediafamily  m
+   INNER JOIN msdb.dbo.backupset s ON m.media_set_id = s.media_set_id 
+WHERE  (CONVERT(datetime, s.backup_start_date, 102) >= GETDATE() - 120)  and database_name in ('Raasintegration_v2','RaaSWarehouse_V2','ReportServerTempDB') 
+ORDER BY
+backup_type,  
+   s.database_name, 
+   s.backup_finish_date
+
+   
+==================================================================
+----------------------------------------------------------
+-- Database Backups for all databases For Previous Week --
+---------------------------------------------------------- 
+SELECT  
+   CONVERT(CHAR(100), SERVERPROPERTY('Servername')) AS Server, 
+   msdb.dbo.backupset.database_name,  
+   msdb.dbo.backupset.backup_start_date,
+   CAST(CAST(msdb.dbo.backupset.backup_size / 1000000 AS INT) AS VARCHAR(14)) + ' ' + 'MB' AS bkSize, 
+   msdb.dbo.backupset.backup_finish_date, 
+   msdb.dbo.backupset.expiration_date,
+   CAST(DATEDIFF(second, msdb.dbo.backupset.backup_start_date,msdb.dbo.backupset.backup_finish_date) AS VARCHAR(4)) + ' ' + 'Seconds' TimeTaken, 
+   CASE msdb..backupset.type
+	WHEN 'D' THEN 'Full'  
+	WHEN 'I' THEN 'Differential'
+        WHEN 'L' THEN 'Log'  
+   END AS backup_type,  
+   msdb.dbo.backupset.recovery_model ,
+   msdb.dbo.backupmediafamily.logical_device_name,  
+   msdb.dbo.backupmediafamily.physical_device_name,   
+   msdb.dbo.backupset.name AS backupset_name, 
+   msdb.dbo.backupset.description
+     
+FROM   msdb.dbo.backupmediafamily  
+   INNER JOIN msdb.dbo.backupset ON msdb.dbo.backupmediafamily.media_set_id = msdb.dbo.backupset.media_set_id 
+WHERE  (CONVERT(datetime, msdb.dbo.backupset.backup_start_date, 102) >= GETDATE() - 120)  and database_name in ('Raasintegration_v2','RaaSWarehouse_V2','ReportServerTempDB') 
+ORDER BY
+backup_type,  
+   msdb.dbo.backupset.database_name, 
+   msdb.dbo.backupset.backup_finish_date
+
+   
+
+   

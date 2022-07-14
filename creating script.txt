@@ -1,0 +1,6 @@
+creating script 
+
+select +'grant select on ' + 'EDM_GBL.'+ name + ' to [NANET\CDW_DB_GBL_LEAD_RW_ALUSFW]' from sysobjects where type ='v'
+
+
+select +'ALTER TABLE '+SCHEMA_NAME(schema_id)+'.'+ name + ' REBUILD'  from sys.tables 

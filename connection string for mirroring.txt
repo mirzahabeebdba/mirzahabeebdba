@@ -1,0 +1,1 @@
+Data Source=myServerAddress; Failover Partner=myMirrorServerAddress; Initial Catalog=myDataBase; Integrated Security=True;

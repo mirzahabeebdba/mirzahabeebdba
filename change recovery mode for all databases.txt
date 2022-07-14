@@ -1,0 +1,27 @@
+declare @name sysname,
+        @recovery_model_desc nvarchar(120),
+        @script nvarchar(500),
+        @full_backup_count int
+   
+select @full_backup_count = count(*) from sys.databases where recovery_model_desc = 'FULL'
+print 'There are ' + cast(@full_backup_count as varchar) + ' with FULL backup set'
+   
+  declare db cursor 
+  for select name, recovery_model_desc from sys.databases where recovery_model_desc = 'FULL'
+  for read only
+   
+  open db
+  fetch next from db into @name, @recovery_model_desc
+  while @@fetch_status = 0
+  begin
+     set @script = 'alter database [' + @name + '] set recovery simple'
+     exec sp_executesql @script
+     print 'Done with ' + @name
+     fetch next from db into @name, @recovery_model_desc
+  end
+   
+  close db
+  deallocate db
+   
+  select @full_backup_count = count(*) from sys.databases where recovery_model_desc = 'FULL'
+print 'There are ' + cast(@full_backup_count as varchar) + ' with FULL backup set'

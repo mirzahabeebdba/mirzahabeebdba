@@ -1,0 +1,9 @@
+Step 1 - Backup the database(s) - full on the Primary
+Step 2 - Take a tlog backup of the database(s) on the Primary
+Step 3 - Restore the backup from Step 1 with NO RECOVERY onto the Secondary
+Step 4 - Restore the tlog backup from Step 2 with NO RECOVERY onto the Secondary
+Step 5 - Add the database to the AG:
+-- run below on primary 
+--ALTER AVAILABILITY GROUP [youragname] ADD DATABASE [yourdatabasename]
+-- run below on secondary 
+ALTER DATABASE [yourdatabasename] SET HADR AVAILABILITY GROUP = [youraggroupname]

@@ -1,0 +1,11 @@
+sELECT
+         cpu_idle = record.value('(./Record/SchedulerMonitorEvent/SystemHealth/SystemIdle)[1]', 'int'),
+         cpu_sql = record.value('(./Record/SchedulerMonitorEvent/SystemHealth/ProcessUtilization)[1]', 'int')
+FROM (
+         SELECT TOP 1 CONVERT(XML, record) AS record
+         FROM sys.dm_os_ring_buffers
+         WHERE ring_buffer_type = N'RING_BUFFER_SCHEDULER_MONITOR'
+         AND record LIKE '% %'
+		 ORDER BY TIMESTAMP DESC
+) as cpu_usage
+

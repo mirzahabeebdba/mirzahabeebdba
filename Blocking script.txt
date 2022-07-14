@@ -1,0 +1,58 @@
+SELECT * FROM dbo.sysprocesses WHERE blocked <> 0;
+SELECT * FROM dbo.sysprocesses WHERE spid IN (SELECT blocked FROM dbo.sysprocesses where blocked <> 0);
+
+--given by LEO
+SELECT   SPID       = er.session_id
+    ,STATUS         = ses.STATUS
+    ,[Login]        = ses.login_name
+    ,Host           = ses.host_name
+    ,BlkBy          = er.blocking_session_id
+    ,DBName         = DB_Name(er.database_id)
+    ,CommandType    = er.command
+    ,ObjectName     = OBJECT_NAME(st.objectid)
+    ,CPUTime        = er.cpu_time
+    ,StartTime      = er.start_time
+    ,TimeElapsed    = CAST(GETDATE() - er.start_time AS TIME)
+    ,SQLStatement   = st.text
+FROM    sys.dm_exec_requests er
+    OUTER APPLY sys.dm_exec_sql_text(er.sql_handle) st
+    LEFT JOIN sys.dm_exec_sessions ses
+    ON ses.session_id = er.session_id
+LEFT JOIN sys.dm_exec_connections con
+    ON con.session_id = ses.session_id
+WHERE   st.text IS NOT NULL 
+
+=====
+
+SELECT Blocker.text , Blocker.*, *
+FROM sys.dm_exec_connections AS Conns
+INNER JOIN sys.dm_exec_requests AS BlockedReqs
+    ON Conns.session_id = BlockedReqs.blocking_session_id
+INNER JOIN sys.dm_os_waiting_tasks AS w
+    ON BlockedReqs.session_id = w.session_id
+CROSS APPLY sys.dm_exec_sql_text(Conns.most_recent_sql_handle) AS Blocker
+==================
+
+select LVL3_PRD_NAME, ((SALES2016_CQTD-SALES2015_PQTD)/ISNULL(NULLIF(SALES2015_PQTD,0),1))*100 as growth from (SELECT LVL3_PRD_NAME,
+SUM(CASE WHEN BILL_MTH in (201604,201605) THEN COMM_AMT ELSE 0 END) SALES2016_CQTD,   
+SUM(CASE WHEN BILL_MTH in (201504,201505) THEN COMM_AMT ELSE 0 END) SALES2015_PQTD
+FROM [CDW_EDM_GBL].[EDM_BKG].[FCT_SALES_ATTRIBUTED] SALES  (nolock)
+JOIN [CDW_EDM_GBL].EDM_BKG.HRY_PRODUCT PROD (nolock) ON (SALES.PRD_SK=PROD.PRD_SK AND PROD.HRY_TYPE ='NADW CUSTOM' AND PROD.FRANCHISE_CD ='VC')
+LEFT JOIN EDM_BKG.DIM_ORDER_TYPE OT (nolock) ON SALES.ORDER_TYPE_SK = OT.ORDER_TYPE_SK 
+LEFT JOIN EDM_BKG.DIM_PRODUCT_VIEW PV (nolock) ON SALES.PRD_VW_SK = PV.PRD_VW_SK 
+LEFT JOIN [CDW_EDM_GBL].EDM_BKG.DIM_CUSTOMER CUST (nolock) ON (SALES.ATTRIBUTED_CUST_SK=CUST.CUST_SK AND CUST.SLS_ORG_SK='8')
+join [CDW_EDM_GBL].EDM_BKG.DIm_territory DT (nolock) on DT.terr_sk =SALES.terr_sk  
+join (SELECT [CONFIG_DTL_VAL_1] AS FF
+			,[CONFIG_DTL_VAL_2] AS PRD
+			
+			 FROM [EDM_UTIL].[CONFIG_MULTI_VAL] 
+			WHERE CONFIG_SUBJECT_AREA = 'US VC ALERT FF TO PRD')	 F  
+			ON F.FF = DT.FIELD_FORCE  and 
+PROD.LVL3_PRD_name = F.PRD	
+WHERE SALES.TERR_SK IN (SELECT TERR_SK FROM EDM_BKG.HRY_TERRITORY (nolock) WHERE LVL4_TERR_NAME='6110' AND LVL_NAME='TERRITORY') --TAKE RELEVANT TERR_SK FROM DIM_TERRITORY TABLE --SELECT * FROM [CDW_EDM_GBL].[EDM_BKG].[DIM_TERRITORY] WHERE TERR_NAME='6110'
+AND SALES.SLS_ORG_SK='8' -- THIS FOR US COUNTY CODE
+AND SALES_TYPE_IDENTIFIER='DAY' --THIS IS A MANDATORY CONDITION FOR ALL US-VC-RESULTS DASHBOARDS
+AND OT.ORDER_TYPE_LVL1_CD = 'ACT' --THIS IS TO GET ONLY ACTUAL SALES (MANDATORY FOR ALL DASHBOARDS)
+AND PV.DSPRSD_FLG= 'Y'  --THIS IS TO GET DISPERED SALES (MANDATORY FOR ALL DASHBOARDS)
+AND SALES.FRANCHISE_CD ='VC'
+GROUP BY LVL3_PRD_NAME) A

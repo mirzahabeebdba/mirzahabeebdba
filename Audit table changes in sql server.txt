@@ -1,0 +1,49 @@
+--create db test
+
+Create trigger tr_audittablechages
+on all server
+for crete_table,alter_table,drop_table
+as 
+begin
+select eventdata()
+end
+
+Create table tablechanges
+(
+databasename nvarchar(250),
+tabelname nvarchat(250),
+eventtype nvarchat(250),
+loginname nvarchat(250),
+sqlcommand nvarchat(2500),
+auditdatetime datetime
+)
+
+--
+alter trigger tr_audittablechages
+on all server
+for crete_table,alter_table,drop_table
+as 
+begin
+declare @eventdata xml
+select @eventdata=eventdata()
+
+insert into sampledb.dbo.tablechanges
+(databasename,tablename,eventtype,loginname,sqlcommand,auditdatetime)
+values
+(
+@eventdate.value('(/event_instance/databasename)[1],varchar(250)'),
+@eventdate.value('(/event_instance/objectname)[1],varchar(250)'),
+@eventdate.value('(/event_instance/eventtype)[1],varchar(250)'),
+@eventdate.value('(/event_instance/loginname)[1],varchar(250)'),
+@eventdate.value('(/event_instance/tsqlcommand)[1],varchar(2500)'),
+getdate()
+)
+end
+
+SELECT event_time,succeeded,object_id,object_name,session_server_principal_name,server_principal_name,server_instance_name,database_name,Statement,file_name,audit_file_offset
+
+
+ from fn_get_audit_file (‘D:\*–SM*’,null,null) order by event_time desc
+
+execute dba_audit_verify 20,'file patch'
+

@@ -1,0 +1,5 @@
+SELECT nt_username,loginame,login_time,program_name
+FROM sys.sysprocesses
+WHERE program_name LIKE 'SQLAgent%'
+
+SELECT * FROM sys.sysprocesses

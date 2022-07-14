@@ -1,0 +1,3 @@
+The following T-SQL statement gets all the information related to the current backup location from the msdb database.
+
+SELECT Distinct physical_device_name FROM msdb.dbo.backupmediafamily

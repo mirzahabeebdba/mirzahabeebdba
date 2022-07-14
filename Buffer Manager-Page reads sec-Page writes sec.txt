@@ -1,0 +1,13 @@
+SELECT object_name, counter_name, cntr_value
+FROM sys.dm_os_performance_counters
+WHERE [object_name] LIKE '%Buffer Manager%'
+AND [counter_name] = 'Page reads/sec'
+
+
+SELECT object_name, counter_name, cntr_value
+FROM sys.dm_os_performance_counters
+WHERE [object_name] LIKE '%Buffer Manager%'
+AND [counter_name] = 'Page writes/sec'
+
+Buffer Manager-Page reads/sec-Page writes/sec
+

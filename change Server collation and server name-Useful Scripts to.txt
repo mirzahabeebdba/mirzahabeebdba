@@ -1,0 +1,15 @@
+Script to change the collation 
+
+**************************************
+E:\setup.exe /Quiet /ACTION=REBUILDDATABASE /INSTANCENAME=MSSQLSERVER /SQLSYSADMINACCOUNTS=x \Administrator /SAPWD=x /SQLCOLLATION=SQL_Latin1_General_CI_AS
+
+How make the the server name and sql servername identical
+***********************************************************************
+EXEC sp_dropserver 'Your_OLD_Computer_Name' 
+GO 
+
+EXEC sp_addserver 'Your_NEW_Computer_Name', 'local' 
+GO 
+
+To check the above use
+select @@servername,serverproperty('servername')

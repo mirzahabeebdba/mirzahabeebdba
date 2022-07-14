@@ -1,0 +1,9 @@
+
+USE master 
+
+GO 
+SELECT SUM(signal_wait_time_ms) AS TotalSignalWaitTime , 
+( SUM(CAST(signal_wait_time_ms AS NUMERIC(20, 2))) 
+/ SUM(CAST(wait_time_ms AS NUMERIC(20, 2))) * 100 ) 
+AS PercentageSignalWaitsOfTotalTime 
+FROM sys.dm_os_wait_stats 

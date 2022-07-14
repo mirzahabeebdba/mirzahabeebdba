@@ -1,0 +1,6 @@
+SELECT 
+SCHEMA_NAME(t1.schema_id) AS [schema], 
+t1.name AS [table], 
+i1.rows AS [row_count]
+FROM sys.tables AS t1 INNER JOIN
+sys.sysindexes AS i1 ON t1.object_id = i1.id AND i1.indid < 2

@@ -1,0 +1,4 @@
+select @@servername 'Server_Name',u.name, p.permission_name 
+from sys.server_permissions p
+left outer join sys.server_principals u on p.grantee_principal_id=u.principal_id
+where p.permission_name ='ALTER TRACE'

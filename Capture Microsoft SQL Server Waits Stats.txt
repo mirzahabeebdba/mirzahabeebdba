@@ -1,0 +1,104 @@
+Create Permanent Table for Logging:
+
+
+CREATE TABLE [dbo].[LOG_WAIT_STATS](
+	[LogID] [int] IDENTITY(1,1) NOT NULL,
+	[BatchID] [int] NULL,
+	[WaitType] [nvarchar](60) NULL,
+	[Wait_S] [decimal](16, 2) NULL,
+	[Resource_S] [decimal](16, 2) NULL,
+	[Signal_S] [decimal](16, 2) NULL,
+	[WaitCount] [bigint] NULL,
+	[Percentage] [decimal](5, 2) NULL,
+	[AvgWait_S] [decimal](16, 4) NULL,
+	[AvgRes_S] [decimal](16, 4) NULL,
+	[AvgSig_S] [decimal](16, 4) NULL,
+	[PeriodEnding] [datetime] NOT NULL,
+	[Comment] [nvarchar](max) NULL
+) ON [PRIMARY] TEXTIMAGE_ON [PRIMARY]
+GO
+
+
+
+T-SQL for capturing Wait Statistics:
+
+- Place this inside a stored procedure and call from a SQL Job
+- Optionally reset the Wait Statistics at the end if doing Performance Testing. Comment it out if want to see the Wait Statistics over time.
+
+
+DECLARE @PeriodEnding DATETIME = getdate(); 
+DECLARE @BatchId INT = 0 
+SELECT @BatchId = isnull(max(BatchID),0)+1 FROM [OPS].[dbo].[LOG_WAIT_STATS]; 
+
+WITH [Waits] AS
+(SELECT
+[wait_type],
+[wait_time_ms] / 1000.0 AS [WaitSec],
+([wait_time_ms] - [signal_wait_time_ms]) / 1000.0 AS [ResourceSec], --wait time for resource (locks, latches, network, disk I/O waits).
+[signal_wait_time_ms] / 1000.0 AS [SignalSec], --wait time the waiting thread was signaled and when it started running.
+[waiting_tasks_count] AS [WaitCount],
+100.0 * [wait_time_ms] / SUM ([wait_time_ms]) OVER() AS [Percentage],
+ROW_NUMBER() OVER(ORDER BY [wait_time_ms] DESC) AS [RowNum]
+FROM sys.dm_os_wait_stats
+WHERE [wait_type] NOT IN (
+N'BROKER_EVENTHANDLER', N'BROKER_RECEIVE_WAITFOR',
+N'BROKER_TASK_STOP', N'BROKER_TO_FLUSH',
+N'BROKER_TRANSMITTER', N'CHECKPOINT_QUEUE',
+N'CHKPT', N'CLR_AUTO_EVENT',
+N'CLR_MANUAL_EVENT', N'CLR_SEMAPHORE',
+N'DBMIRROR_DBM_EVENT', N'DBMIRROR_EVENTS_QUEUE',
+N'DBMIRROR_WORKER_QUEUE', N'DBMIRRORING_CMD',
+N'DIRTY_PAGE_POLL', N'DISPATCHER_QUEUE_SEMAPHORE',
+N'EXECSYNC', N'FSAGENT',
+N'FT_IFTS_SCHEDULER_IDLE_WAIT', N'FT_IFTSHC_MUTEX',
+N'HADR_CLUSAPI_CALL', N'HADR_FILESTREAM_IOMGR_IOCOMPLETION',
+N'HADR_LOGCAPTURE_WAIT', N'HADR_NOTIFICATION_DEQUEUE',
+N'HADR_TIMER_TASK', N'HADR_WORK_QUEUE',
+N'KSOURCE_WAKEUP', N'LAZYWRITER_SLEEP',
+N'LOGMGR_QUEUE', N'MEMORY_ALLOCATION_EXT',
+N'ONDEMAND_TASK_QUEUE',
+N'PREEMPTIVE_XE_GETTARGETSTATE',
+N'PWAIT_ALL_COMPONENTS_INITIALIZED',
+N'PWAIT_DIRECTLOGCONSUMER_GETNEXT',
+N'QDS_PERSIST_TASK_MAIN_LOOP_SLEEP', N'QDS_ASYNC_QUEUE',
+N'QDS_CLEANUP_STALE_QUERIES_TASK_MAIN_LOOP_SLEEP',
+N'QDS_SHUTDOWN_QUEUE', N'REDO_THREAD_PENDING_WORK',
+N'REQUEST_FOR_DEADLOCK_SEARCH', N'RESOURCE_QUEUE',
+N'SERVER_IDLE_CHECK', N'SLEEP_BPOOL_FLUSH',
+N'SLEEP_DBSTARTUP', N'SLEEP_DCOMSTARTUP',
+N'SLEEP_MASTERDBREADY', N'SLEEP_MASTERMDREADY',
+N'SLEEP_MASTERUPGRADED', N'SLEEP_MSDBSTARTUP',
+N'SLEEP_SYSTEMTASK', N'SLEEP_TASK',
+N'SLEEP_TEMPDBSTARTUP', N'SNI_HTTP_ACCEPT',
+N'SP_SERVER_DIAGNOSTICS_SLEEP', N'SQLTRACE_BUFFER_FLUSH',
+N'SQLTRACE_INCREMENTAL_FLUSH_SLEEP',
+N'SQLTRACE_WAIT_ENTRIES', N'WAIT_FOR_RESULTS',
+N'WAITFOR', N'WAITFOR_TASKSHUTDOWN',
+N'WAIT_XTP_RECOVERY',
+N'WAIT_XTP_HOST_WAIT', N'WAIT_XTP_OFFLINE_CKPT_NEW_LOG',
+N'WAIT_XTP_CKPT_CLOSE', N'XE_DISPATCHER_JOIN',
+N'XE_DISPATCHER_WAIT', N'XE_TIMER_EVENT')
+AND [waiting_tasks_count] > 0
+)
+INSERT INTO [OPS].[dbo].[LOG_WAIT_STATS] 
+SELECT 
+@BatchId AS batchID,
+MAX ([W1].[wait_type]) AS [WaitType],
+CAST (MAX ([W1].[WaitSec]) AS DECIMAL (16,2)) AS [Wait_Sec],
+CAST (MAX ([W1].[ResourceSec]) AS DECIMAL (16,2)) AS [Resource_Sec],
+CAST (MAX ([W1].[SignalSec]) AS DECIMAL (16,2)) AS [Signal_Sec],
+MAX ([W1].[WaitCount]) AS [WaitCount],
+CAST (MAX ([W1].[Percentage]) AS DECIMAL (5,2)) AS [Percentage],
+CAST ((MAX ([W1].[WaitSec]) / MAX ([W1].[WaitCount])) AS DECIMAL (16,4)) AS [AvgWait_Sec],
+CAST ((MAX ([W1].[ResourceSec]) / MAX ([W1].[WaitCount])) AS DECIMAL (16,4)) AS [AvgRes_Sec],
+CAST ((MAX ([W1].[SignalSec]) / MAX ([W1].[WaitCount])) AS DECIMAL (16,4)) AS [AvgSig_Sec],
+@PeriodEnding AS 'PeriodEnding' , 
+NULL 
+FROM [Waits] AS [W1]
+INNER JOIN [Waits] AS [W2] ON [W2].[RowNum] <= [W1].[RowNum]
+GROUP BY [W1].[RowNum]
+HAVING SUM ([W2].[Percentage]) - MAX( [W1].[Percentage] ) < 95; -- only show ones until the Percentage Sum < 95%
+
+
+DBCC SQLPERF (N'sys.dm_os_wait_stats', CLEAR); 
+GO

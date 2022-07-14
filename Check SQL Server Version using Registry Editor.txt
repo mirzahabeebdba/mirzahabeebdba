@@ -1,0 +1,3 @@
+Check SQL Server Version using Registry Editor
+
+Computer > HKEY_LOCAL_MACHINE > Software > Microsoft > Microsoft SQL Server > 110 > SQL Server 2012 > CurrentVersion

@@ -1,0 +1,28 @@
+--check DAC connection status
+SELECT s.*, e.*
+FROM sys.tcp_endpoints as e JOIN sys.dm_exec_sessions as s
+ON e.endpoint_id = s.endpoint_id
+WHERE e.name='Dedicated Admin Connection'
+
+SELECT * 
+FROM sys.dm_exec_sessions
+WHERE endpoint_id = 1
+
+select conn.session_id, sess.login_name, sess.nt_domain, sess.nt_user_name, conn.connect_time, conn.last_read, conn.last_write, sess.host_name, conn.client_net_address
+    from sys.dm_exec_connections conn
+    join sys.endpoints edp
+        on conn.endpoint_id = edp.endpoint_id
+    join sys.dm_exec_sessions sess
+        on sess.session_id = conn.session_id   
+    where edp.is_admin_endpoint = 1
+---
+SELECT	CASE WHEN SES.session_id = @@SPID THEN 'It''s me! '
+        ELSE '' END + COALESCE(SES.login_name,'???') AS WhosGotTheDAC, 
+		SES.session_id, 
+		SES.login_time, 
+		SES.status, 
+		SES.original_login_name 
+FROM	sys.endpoints EN 
+INNER JOIN sys.dm_exec_sessions SES
+	ON EN.endpoint_id = SES.endpoint_id 
+WHERE	EN.name = 'Dedicated Admin Connection'
